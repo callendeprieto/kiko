@@ -1,0 +1,730 @@
+#!/usr/bin/perl -w
+#
+#	kiko> A Personal Job Scheduler
+#	
+#	Type 'kiko help' for options
+#
+#   Copyright 2009-2012, Carlos Allende Prieto
+#
+#   Version 1.3		December 2011
+#
+
+#setup dir/files and parameters 
+$kikodir="$ENV{WORK}/.kiko/";        		#kiko directory
+$config_file="$kikodir/kiko.config";		#config file -- plain perl
+
+#derivatives
+$pending="$kikodir/kiko.pending";    #pending jobs
+$running="$kikodir/kiko.running";    #running jobs
+$semaphore="$kikodir/kiko.semaphore";#semaphore file: flagging when to stop kiko
+$logfile="$kikodir/kiko.log";        #logfile
+
+#headers
+$pending_header="#jobid     time    exe                               dir \n";
+$running_header="#jobid pid time    exe                               dir \n";
+
+#cleanup '--' from input arguments
+foreach $entry (@ARGV){
+	$entry =~ s/--//g;
+}
+
+#count the input arguments
+$nargs=@ARGV;
+
+#menu
+if($nargs < 1){						showjobs();	
+}elsif($ARGV[0]  eq 'help'){		help();
+}elsif ($ARGV[0] eq 'version'){		version();
+}elsif ($ARGV[0] eq 'setup'){		setup();
+}elsif ($ARGV[0] eq 'on'){			on();
+}elsif($ARGV[0]  eq "off"){			off();
+}elsif($ARGV[0]  eq "kill"){		killer();	
+}elsif($ARGV[0]  eq "killall"){		killall();
+}elsif($ARGV[0]  eq "del"){			eraser();
+}elsif($ARGV[0]  eq "delall"){		delall();
+}else{								submit();
+}
+
+#print job info when kiko is called with no arguments
+sub showjobs{
+
+	#check whether kiko is running
+	checksemaphore();
+	warn "kiko> It appears I'm not running: the following report may be outdated\n" unless ($goon);
+
+	#running
+	open(RUN,"<$running") or die "kiko: Cannot r open $running: $!";
+	flock(RUN,1) or die "Cannot get a shared lock on $running: $!";
+	$header=<RUN>;
+	@jobs=<RUN>;
+	close(RUN);
+	if (@jobs){
+		print "--------------------   Running ... ---------------------------------------------\n";
+		print $running_header;
+		foreach $entry (@jobs){
+			($jobid,$pid,$exe,$dir,$time0)=split(" ",$entry);
+			$time=time();
+			$time=$time-$time0;
+			$tunit='s';
+			if ($time>60){
+				$time=$time/60.;
+				$tunit='m';
+				if ($time>60){
+					$time=$time/60.;
+					$tunit='h';
+					if ($time>24){
+						$time=$time/24.;
+						$tunit='d';
+					}
+				}
+			}
+			
+			#print "$jobid $pid $time$tunit $exe $dir\n";
+			printf "%4i %5s %3i%1s %30s %30s\n",$jobid,$pid,$time,$tunit,$exe,$dir;
+
+		}
+		print "--------------------------------------------------------------------------------\n";
+	}else{print "kiko> No jobs running\n"}
+	
+	#pending
+	open(PEND,"<$pending") or die "kiko: Cannot r open $pending: $!";
+	flock(PEND,1) or die "Cannot get a shared lock on $pending: $!";
+	$header=<PEND>;
+	@jobs=<PEND>;
+	close(PEND);
+	if (@jobs){
+		print "--------------------   Pending ... ---------------------------------------------\n";
+	    print $pending_header;
+		foreach $entry (@jobs){
+			($jobid,$exe,$dir,$time0)=split(" ",$entry);
+			$time=time();
+			$time=$time-$time0;
+			$tunit='s';
+			if ($time>60){
+				$time=$time/60.;
+				$tunit='m';
+				if ($time>60){
+					$time=$time/60.;
+					$tunit='h';
+					if ($time>24){
+						$time=$time/24.;
+						$tunit='d';
+					}
+				}
+			}
+
+			#print "$jobid        $time$tunit $exe $dir\n";
+			printf "%4i       %3i%1s %30s %30s\n",$jobid,$time,$tunit,$exe,$dir;
+		}
+		print "--------------------------------------------------------------------------------\n";
+	}else{print "kiko> No jobs pending\n"}
+	
+}
+
+#print a quick help
+sub help{
+	print "\n";
+	print "kiko> Options are as follows:\n\n";
+	print "      To submit jobs          kiko [-dir] exe(s) \n";
+	print "      To get job info         kiko \n";
+	print "      To kill running jobs    kiko kill jobid(s) (or kiko killall) \n";
+	print "      To delete pending jobs  kiko del jobid(s) (or kiko delall) \n";
+	print "      To start the deamon     kiko on\n";
+	print "      To stop the deamon      kiko off\n";
+	print "      To get version info     kiko version \n";
+	print "      To setup kiko>          kiko setup \n\n";
+}
+
+#print version info
+sub version{
+	print "\n";
+	print "kiko> v1.2\n";
+	print "kiko> Copyright 2009-2010, Carlos Allende Prieto\n\n";
+	print "kiko> is distributed under the terms of the GNU General Public\n"; 	
+	print "      License version 3, as published by the Free Software Foundation\n\n";
+	print "kiko> For help type  'kiko help' \n\n";
+}
+
+#setup -- create kikodir
+sub setup{
+
+	if (-d $kikodir){
+	
+		#check that kiko's not running already
+		checksemaphore();
+		if($goon){die "kiko> It appears I'm running. Please turn me off before setup\n"};
+
+		
+		#kikodir is in place, so we purge it
+		opendir(DIR,$kikodir) or die "kiko> Cannot opendir $kikodir: $!\n";
+		while (defined($file=readdir(DIR))){
+			unlink("$kikodir/$file");
+		}
+		close(DIR);
+		rmdir($kikodir);
+	}
+		
+	#kikodir is created it and so are its default files
+	mkdir $kikodir;
+	open (RUN,"> $running");
+	open (PEND,"> $pending");
+	open (LIGHT,"> $semaphore");
+	print RUN $running_header;
+	print PEND $pending_header;
+	print LIGHT "0\n";
+	close(RUN);
+	close(PEND);
+	close(LIGHT);
+	print "kiko> All set up!\n";
+}
+
+#start the deamon
+sub on{
+		
+	#check that kiko's not running already
+	checksemaphore();
+	if($goon){die "kiko> It appears I'm already running\n"};
+	
+	#check that working dir is in place or the user is setting it up
+	die "kiko> The kiko directory $kikodir is not in place\nkiko> You can create it typing 'kiko setup'\n" unless (-d $kikodir);
+
+    #read config file, if available      
+    #this is far from perfect, but gives flexibility in the usr input
+    #e.g. parameters changing with time:
+    #---($hours,$day,$month,$year)=(localtime)[2,3,4,5];
+	#---if ($hours<8){$ncpu=2}else{$ncpu=1};
+    $doconf=0;
+    if (-e $config_file){
+    	#execute it
+    	if (do $config_file){
+    		warn "kiko> Executing config. file $config_file \n";
+    		$doconf=1;
+    	}else{
+    		die "Cannot execute config. file $config_file \n";
+    	}
+    	
+	    #read config file to re-evaluate the Perl code on every iteration below
+    	open(CONFIG,"<$config_file") or die "kiko> Cannot r open the config. file $config_file\n";
+    	print "kiko> Reading config file $config_file: \n";
+    	while (<CONFIG>){
+    		$conf_input .= $_;
+    	}
+    	close(CONFIG); 
+   	}
+    
+	#$time_start=time();
+
+	#defaults 
+	$ncpu=2 unless defined $ncpu;        #number of threads available
+	$style="pids" unless defined $style; #use 'files' or 'pids' to track jobs
+	$watch='runningjobs' unless defined $watch;# load/ps/runningjobs
+	$period=30 unless defined $period;   #checkrun time period (s)
+	$max_nadd=1 unless defined $max_nadd;#max number of jobs to start per period
+		
+	#load threshold
+	$keep_load=$ncpu-0.9;                #when to launch jobs (see checkruns())
+
+	#checks
+	die "kiko> Parameter style can only be 'files' or 'pids'" unless ($style eq	 "files" or $style eq "pids");
+	die "kiko> Parameter watch can only be 'load', 'ps', or 'runningjobs'" unless ($watch eq "load" or $watch eq "runningjobs" or $watch eq "ps");
+	
+
+	if($watch eq 'load' and $period < 30){
+		$period=30;
+		warn "kiko> Resetting period=$period: min. value for  watch=$watch\n";
+	}	
+
+	#wake up deamon
+	
+	#fork, let the parent exit
+	$pid=fork;
+	exit 0 if $pid;
+	die "kiko> Cannot fork away: $!" unless defined($pid);
+	print "kiko> On!\n";	
+	
+	#loop
+	$goon=$$;
+	changesemaphore($goon);
+	
+	#avoid hang when launching terminal goes
+	$SIG{HUP}='IGNORE';
+
+	#listen to SIGUSR1 from 'kiko off' -> time to shutdown 
+	$SIG{USR1}=\&shutdown;
+	
+	#open log file
+	open(STDOUT,"> $logfile") or die "kiko> Cannot open redirect STDOUT to logfile $logfile \n";
+	
+	
+	while ($goon){
+	
+		print "in the loop, doconf=$doconf\n";
+		if ($doconf){
+			#evaluate code from the conf. file
+			eval $conf_input;
+			die "kiko> $@ \n" if $@; 
+		}
+	
+		#if 'kiko off' signals, hold on for a little longer to check run stat
+		$SIG{USR1}= sub{ $goon=0 };
+	
+		#examine running-jobs file
+		#evaluate the machine load
+		#and start new jobs if the load is low enough
+		checkrun();	
+		
+		#if SIGUSR1 while checkrun, now is time to shutdown
+		if ($goon == 0){
+				die "kiko> Exiting the loop: goon=$goon. By-bye!\n";
+		}
+		
+		#in our sleep, we listen to SIGUSR1 from 'kiko off'
+		$SIG{USR1}=\&shutdown;
+		
+		sleep $period;		
+
+	}
+	close(STDOUT);
+	print "kiko> Exiting the loop: goon=$goon. Bye-bye!\n";
+}
+
+#stop the deamon
+sub off{
+
+	#check that kiko is running
+	checksemaphore();
+	die "kiko> It appears I'm not running\n" unless ($goon);
+	
+	#check that working dir is in place or the user is setting it up
+die "kiko> The kiko directory $kikodir is not in place\nkiko> You can create it typing 'kiko setup'\n" unless (-d $kikodir);
+	
+	#signal kiko to exit and reset the semaphore
+	#kill 9 => $goon;
+	kill USR1 => $goon;
+	changesemaphore(0);
+	print "kiko> Off!\n";
+}
+
+#kill one or several of the kiko jobs that are running
+sub killer{
+
+	#check that kiko is running
+	checksemaphore();
+	die "kiko> It appears I'm not running\n" unless ($goon);
+	
+	#check that working dir is in place or the user is setting it up
+die "kiko> The kiko directory $kikodir is not in place\nkiko> You can create it typing 'kiko setup'\n" unless (-d $kikodir);
+	
+	#leave only the jobids in @ARGV 
+	$dummy=shift(@ARGV);
+
+	#kill the requested running processes
+	open(RUN,"+<$running") or die "kiko: Cannot rw open $running: $!";
+	flock(RUN,2) or die "Cannot get an exclusive lock on $running: $!";
+	$header=<RUN>;
+	@jobs=<RUN>;
+	seek(RUN,0,0)  or die "kiko> Cannot rewind $running: $!";     #rewind
+	#print RUN $header;
+	print RUN $running_header;
+	
+	if (@jobs){
+		foreach $entry (@jobs){
+			($jobid,$pid,$dummy,$dummy,$dummy,$dummy)=split(" ",$entry);
+			$convicted=0;
+			foreach $job (@ARGV){
+				if ($job == $jobid){$convicted=1};
+			}
+			if ($convicted){
+					$pgid=getpgrp($pid);					
+					kill 9 => -$pgid or warn "kiko> Cannot terminate job with jobid=$jobid , pid=$pid and pgid=$pgid\n";
+					print "kiko> Terminating job with jobid=$jobid , pid=$pid and pgid=$pgid\n" ;
+					$killed{$jobid}=1;
+			}else{
+				print RUN $entry;
+			}
+		}
+	}else{print "koko> No koko jobs running\n"};
+	
+	truncate(RUN,tell(RUN)) or die "kiko> Cannot truncate $running: $!";
+	close(RUN);
+	
+	foreach $jobid (@ARGV){
+		print "kiko> Cannot find any running job with jobid=$jobid\n" unless $killed{$jobid};
+	}
+	
+}
+
+#kill all kiko running jobs
+sub killall{
+
+	#check that kiko is running
+	checksemaphore();
+	die "kiko> It appears I'm not running\n" unless ($goon);
+	
+	#check that working dir is in place or the user is setting it up
+die "kiko> The kiko directory $kikodir is not in place\nkiko> You can create it typing 'kiko setup'\n" unless (-d $kikodir);
+
+	#kill all running processes
+	open(RUN,"+<$running") or die "kiko: Cannot rw open $running: $!";
+	flock(RUN,2) or die "Cannot get an exclusive lock on $running: $!";
+	$header=<RUN>;
+	@jobs=<RUN>;
+	seek(RUN,0,0)  or die "kiko> Cannot rewind $running: $!";     #rewind
+	#print RUN $header;
+	print RUN $running_header;
+	if (@jobs){
+		print "kiko> Terminating all running jobs\n";
+	 	foreach $entry (@jobs){
+			($jobid,$pid,$dummy,$dummy,$dummy)=split(" ",$entry);
+			$pgid=getpgrp($pid);
+			kill 9 => -$pgid or warn "kiko> Cannot terminate job with jobid=$jobid , pid=$pid and pgid=$pgid\n";
+		}
+	}else{print "kiko> Sorry, there are no jobs running\n"}
+	truncate(RUN,tell(RUN)) or die "kiko> Cannot truncate $running: $!";
+	close(RUN);
+}
+
+#delete one or a few of the pending jobs
+sub eraser{
+
+	#check that kiko is running
+	checksemaphore();
+	die "kiko> It appears I'm not running\n" unless ($goon);
+	
+	#check that working dir is in place or the user is setting it up
+die "kiko> The kiko directory $kikodir is not in place\nkiko> You can create it typing 'kiko setup'\n" unless (-d $kikodir);
+	
+	#leave only the jobids in @ARGV 
+	$dummy=shift(@ARGV);
+
+	#del the requested pending processes
+	open(PEND,"+<$pending") or die "kiko> Cannot rw open $pending: $!";
+	#competing with deamon 
+	flock(PEND,2) or die "kiko> Cannot get an exclusive lock on $pending: $!";
+	$header=<PEND>;
+	@jobs=<PEND>;
+	seek(PEND,0,0)  or die "kiko> Cannot rewind $pending: $!";     #rewind 
+	#print PEND header
+	print PEND $pending_header;
+	%is_pending=(); #hash to flag which of the candidates are actually pending
+	if (@jobs){	
+	
+		#find those actually pending and rewrite back the rest
+		foreach $entry (@jobs){
+			($jobid,$dummy,$dummy,$dummy)=split(" ",$entry);
+			foreach $input_jobid (@ARGV){
+				if ($input_jobid == $jobid){$is_pending{$jobid}=1};
+			}
+			if ($is_pending{$jobid}){
+					print ">kiko Deleting job with jobid=$jobid\n";
+			}else{
+				print PEND $entry;
+			}
+		}
+		
+		#warn if there are jobs in the delete request that are not pending
+		foreach $input_jobid (@ARGV){
+			warn "kiko> Attempted to delete a job (jobid $input_jobid) which is not pending\n" unless $is_pending{$input_jobid};
+		}
+		
+	}else{print "kiko> Sorry, there are no jobs pending\n"};
+	truncate(PEND,tell(PEND)) or die "kiko> Cannot truncate $pending: $!";
+	close(PEND);
+}
+
+#delete all pending jobs
+sub delall{
+									
+	#check that kiko is running
+	checksemaphore();
+	die "kiko> It appears I'm not running\n" unless ($goon);
+	
+	#check that working dir is in place or the user is setting it up
+die "kiko> The kiko directory $kikodir is not in place\nkiko> You can create it typing 'kiko setup'\n" unless (-d $kikodir);
+
+	#del all pending processes
+	open(PEND,"+<$pending") or die "kiko> Cannot rw open $pending: $!";
+	#competing with deamon 
+	flock(PEND,2) or die "kiko> Cannot get an exclusive lock on $pending: $!";
+	$header=<PEND>;
+	@jobs=<PEND>;
+	seek(PEND,0,0)  or die "kiko> Cannot rewind $pending: $!";     #rewind 
+	#print PEND header
+	print PEND $pending_header;
+	if (@jobs){	
+		print "kiko> Removing all pending jobs in the queue\n";
+	}else{print "kiko> Sorry, there are no jobs pending\n"};
+	truncate(PEND,tell(PEND)) or die "kiko> Cannot truncate $pending: $!";
+	close(PEND);
+}
+
+
+#handle USR1 signal USR1 to shutdown from 'kiko off'
+sub shutdown{
+	$SIG{USR1}=\&shutdown;
+	#close(STDOUT);
+	exit 0;
+}
+
+#check semaphore file, the daemon pid is returned as $goon
+sub checksemaphore{
+
+  $goon=0;
+  if (-e $semaphore){
+  
+	#this is a candidate for a FIFO
+	open(LIGHT,"+<$semaphore") or die "kiko> Cannot rw open $semaphore: $!";
+	flock(LIGHT,2) or die "kiko> Cannot get a shared lock on $semaphore: $!";
+	$goon=<LIGHT>;
+	chomp($goon);
+
+	#verify that the kiko pid is still on
+	unless (kill 0 => $goon){
+		#not there anymore, reset to 0
+		$goon=0;
+		seek(LIGHT,0,0) or die "kiko> Cannot rewind $semaphore: $!";     #rewind
+		print LIGHT "0\n";
+		truncate(LIGHT,tell(LIGHT)) or die "kiko> Cannot truncate $semaphore: $!";
+	}
+	
+	#print "kiko> goon=$goon\n";
+	close(LIGHT);
+  }
+}
+
+#writing the input value to the semaphore file
+sub changesemaphore{
+	my $val=shift(@_);
+	open(LIGHT,">$semaphore") or die "kiko> Cannot w open $semaphore: $!";
+	flock(LIGHT,2) or die "kiko> Cannot get an exclusive lock on $semaphore: $!";
+	print LIGHT "$val\n";
+	close(LIGHT);
+}
+
+
+#look-up and update the RUN file
+#check out the machine load
+#start next job if load is low
+sub checkrun{
+	
+	#acquire RUN info
+	open(RUN,"+<$running") or die "kiko: Cannot rw open $running: $!";
+	flock(RUN,2) or die "Cannot get an exclusive lock on $running: $!";
+	$header=<RUN>;
+	@jobs=<RUN>;
+
+	#update RUN (jobs may have ended)
+	$jobid=0;
+	seek(RUN,0,0)  or die "kiko> Cannot rewind $running: $!";     #rewind
+	#print RUN $header;
+	print RUN $running_header;
+
+	foreach $entry (@jobs){
+		($jobid,$pid,$exe,$dir,$time0)=split(" ",$entry);
+		if ($style eq "files"){
+			if(-e "$kikodir/$jobid"){
+					print RUN $entry;
+			}else{print "job $jobid is no longer running\n"};
+		}else{
+			if (kill 0 => $pid){
+				print RUN $entry;
+			}else{
+				print "kiko> Job $jobid with pid $pid is no longer running\n";
+				#$time_now=time();
+				#if ($jobid == 10){print "ellapsed time = ",$time_now-$time_start,"\n"};
+				#if ($dir =~ /1000/){print "ellapsed time = ",$time_now-$time_start,"\n"};
+			}
+		}
+	}
+	truncate(RUN,tell(RUN)) or die "kiko> Cannot truncate $running: $!";
+	close(RUN);
+
+	$load=1e9;
+	if ($watch eq 'runningjobs'){
+
+		#acquire info on running jobs
+		open(RUN,"<$running") or die "kiko> Cannot r open $running: $!";
+		flock(RUN,1) or die "Cannot get a shared lock on $running: $!";
+		$header=<RUN>;
+		@jobs=<RUN>;
+		close(RUN);
+		$load=@jobs;
+		print "number of jobs running=$load \n";
+		
+	}elsif($watch eq 'ps'){
+	
+		#acquire ps info
+		open(INFO,"ps -eo pcpu|") or die "kiko> Cannot get system info from ps: $!";
+		$header=<INFO>;
+		@load=<INFO>;
+		close(INFO);
+		$load=0.0;
+		foreach (@load){
+			$load=$load+$_;
+		}
+		$load=$load*0.01;
+		#need to deal with Solaris' habit of normalizing total cpu usage to 100%
+		#regardless of numbers of threads
+		print "cpu action=$load \n";
+	
+	}else{
+	
+		#acquire load data
+		open(INFO,"uptime |") or die "kiko> Cannot get system info from 'uptime': $!";
+		$load=<INFO>;
+		close(INFO);
+		@load=split(" ",$load);
+		$load=$load[$#load-2];
+		$load=~ tr/,//;
+		print "1m load=$load \n";
+	
+	}
+	
+	#if load not high enough, then add a new job
+	print "load is $load \n";
+	if($load < $keep_load){
+		print " launch1\n";
+		$nadd=int($keep_load-$load+1.);
+		if ($max_nadd < $nadd){$nadd=$max_nadd};
+		launch();
+	}
+	
+}
+
+#launching next job from the queue
+sub launch{
+	open(PEND,"+<$pending") or die "kiko> Cannot rw open $pending: $!";
+	#competing with submission script
+	flock(PEND,2) or die "kiko> Cannot get an exclusive lock on $pending: $!";
+	$header=<PEND>;
+	my @jobs=<PEND>;
+	if (@jobs){
+	 open(RUN,">>$running") or die "kiko> Cannot w (append) open $running: $!";
+	 flock(RUN,2) or die "kiko> Cannot get an exclusive lock on $running: $!";	
+	 seek(PEND,0,0)  or die "kiko> Cannot rewind $pending: $!";     #rewind
+	 print PEND $pending_header;
+	 $k=0;
+	 foreach $entry (@jobs){
+	 	($jobid,$exe,$dir,$time0)=split(" ",$entry);
+		if ($k<$nadd){
+			print "starting $exe at $dir\n";
+			chdir $dir;
+			#using system
+			if ($style eq "files"){
+				$pid=0; #not available with this style
+				system("(echo run > $kikodir/$jobid; (time $exe) 1> $dir/$jobid.out 2> $dir/$jobid.err; rm $kikodir/$jobid) &") == 0 or die "kiko> Error submitting $exe at $dir: $?\n";
+			}else{
+				#using fork+exec (getting control over pids)
+				$SIG{CHLD}='IGNORE';
+				if ($pid = fork){
+					#parent
+					print "Parent pid is $$ and child pid is $pid \n";
+				}else{
+					#child
+					$SIG{CHLD}='DEFAULT';
+					die "kiko> Can't fork: $!" unless defined $pid;
+					setpgrp;  #make child independent (set a gid different from kiko's)
+					#print "Child pid is $$ \n";
+					open(STDOUT,"> $dir/$jobid.out") or die "kiko> Cannot open stdout for job $$ \n";
+					open(STDERR,"> $dir/$jobid.err") or die "kiko> Cannot open stderr for job $$ \n";
+					exec("$exe") or warn "kiko> Can't exec: $!";
+					close(STDOUT);
+					close(STDERR);
+					exit 0;
+				}
+			}
+			$time0=time();
+			print      RUN "$jobid      $pid     $exe     $dir $time0\n";
+		}else{
+			print     PEND "$jobid               $exe     $dir $time0\n";
+		}
+		$k++;
+	 }
+	 truncate(PEND,tell(PEND)) or die "kiko> Cannot truncate $pending: $!";
+	 close(RUN);
+	}#else{print "no pending jobs! time=",time(),"\n"}
+	close(PEND);
+}
+
+#submit jobs to the queue
+sub submit{
+
+	#check that kiko is running
+	checksemaphore();
+	die "kiko> It appears I'm not running\n" unless ($goon);
+
+	#get basic info in job
+	$pwd=`pwd`;
+	chomp($pwd);
+	$dir=$pwd;
+	
+	#update $jobid scanning running file
+	open(RUN,"<$running") or die "kiko: Cannot r open $running: $!";
+	flock(RUN,1) or die "Cannot get a shared lock on $running: $!";
+	$header=<RUN>;
+	my @jobs=<RUN>;
+	if (@jobs){
+	 	foreach $entry (@jobs){
+			($jobid,$dummy,$dummy,$dummy,$dummy)=split(" ",$entry);
+		}
+	}
+	close(RUN);
+	
+	#update $jobid scanning pending file
+	open(PEND,"+<$pending") or die "kiko> Cannot rw open $pending: $!";
+	#competing with deamon 
+	flock(PEND,2) or die "kiko> Cannot get an exclusive lock on $pending: $!";
+	$header=<PEND>;
+	@jobs=<PEND>;
+	if (@jobs){
+	 	foreach $entry (@jobs){
+			($jobid,$dummy,$dummy,$dummy)=split(" ",$entry);
+		}
+	}
+	
+	$force_dir=0; #keep track of the user-imposed execution dir using '-'
+	foreach $entry (@ARGV){
+		if($entry =~ /^-/){
+		#exe directory is forced by user
+			$dir=substr($entry,1);
+			if ($dir !~ /^\//){$dir=$pwd."/".$dir};
+			$force_dir=1;
+		}else{
+			$slash=rindex($entry,'/');
+			if ($force_dir == 0 and $slash>0){
+				$dir=substr($entry,0,$slash);
+				$entry=substr($entry,$slash+1);
+				if ($dir !~ /^\//){$dir=$pwd."/".$dir};
+			}
+			print " dir   =$dir\n entry =$entry \n";
+			$validjob=1;
+			legit();
+			if ($validjob){
+				$jobid++;
+				$time0=time();
+				print     PEND "$jobid               $entry     $dir $time0\n";
+				print "kiko> job submitted: jobid=$jobid --> $entry \n";
+			}else{warn "kiko> This is not a valid job -- I'll ignore it \n"}
+		}
+	}
+	close(PEND);
+}
+
+#checking whether the exe and the attempted submission directory are valid
+sub legit{
+	$exe1=`cd $dir; which $entry`;
+	chomp($exe1);
+	if(substr($exe1,0,1) eq '.'){$exe1=$dir.substr($exe1,1,length($exe1)-1)};
+	unless (-x $exe1){
+		$validjob=0;
+		warn "kiko> The program $entry cannot be executed from $dir \n";
+		#alternatively, one can here leave $validjob=1 and
+		#let kiko> modify the permissions
+		#warn "kiko> making it executable ...\n";
+		#system("chmod u+x $exe1");
+	}	
+	unless (-d $dir){
+		$validjob=0;
+		warn "kiko> The execution directory $dir is not in place \n";
+	}
+}
