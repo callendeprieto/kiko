@@ -171,7 +171,8 @@ sub setup{
 
         #count the number of available cores (mac and posix)
         if ($^O eq 'darwin'){     #macOS
-           $cpus = trim(`sysctl -n hw.ncpu`);
+           $cpus = `sysctl -n hw.ncpu`;
+           $cpus =~ s/^\s+|\s+$//g;
           }elsif($^O eq 'linux'){ #linux
 	    open $h, "/proc/cpuinfo";
 	    if ($h)
