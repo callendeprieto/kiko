@@ -1,7 +1,7 @@
-If you have a Unix-like system (e.g. Solaris, linux, Mac OS X) and Perl 5, you
-should be ready to go. Kiko> should consume virtually no resources, and 
-can be used with any shared-memory machine (i.e. any standard PC) with 
-any number of cores: from 1 to n.
+If you have a posix system (e.g. Solaris, Ubuntu, Fedora, Mac OS ...) 
+and Perl 5, you should be ready to go. Kiko> should consume virtually no 
+resources, and can be used with any shared-memory machine (i.e. any standard PC) 
+with any number of cores: from 1 to n.
 
 To install kiko you need first to place the Perl source code (kiko) somewhere 
 it is accessible -- it has to be in your path. If you do not have root access, 
