@@ -6,11 +6,15 @@
 #
 #   Copyright 2009-2012, Carlos Allende Prieto
 #
-#   Version 1.3		December 2011
+#   Version 1.4		April 2022
 #
 
 #setup dir/files and parameters 
-$kikodir="$ENV{WORK}/.kiko/";        		#kiko directory
+if(defined $ENV{'WORK'}){                                 #kiko directory
+     $kikodir="$ENV{'WORK'}/.kiko/";        		
+   }else{
+     $kikodir="$ENV{'HOME'}/.kiko/";        		
+   }
 $config_file="$kikodir/kiko.config";		#config file -- plain perl
 
 #derivatives
@@ -30,6 +34,7 @@ foreach $entry (@ARGV){
 
 #count the input arguments
 $nargs=@ARGV;
+
 
 #menu
 if($nargs < 1){						showjobs();	
@@ -163,24 +168,41 @@ sub setup{
 		close(DIR);
 		rmdir($kikodir);
 	}
+
+        #count the number of available cores (mac and posix)
+        if ($^O eq 'darwin'){     #macOS
+           $cpus = trim(`sysctl -n hw.ncpu`);
+          }elsif($^O eq 'linux'){ #linux
+	    open $h, "/proc/cpuinfo";
+	    if ($h)
+	      {
+		@info = <$h>;
+		close $h;
+		$cpus = scalar(map /^processor/, @info);
+	      }
+          }else{                  #windows? free BSD? by elimination
+                $cpus = 2;
+        }
 		
 	#kikodir is created it and so are its default files
 	mkdir $kikodir;
 	open (RUN,"> $running");
 	open (PEND,"> $pending");
 	open (LIGHT,"> $semaphore");
+        open (CONF,">$config_file");
 	print RUN $running_header;
 	print PEND $pending_header;
 	print LIGHT "0\n";
-	close(RUN);
-	close(PEND);
-	close(LIGHT);
+        print CONF "\$period=1;\n\$cpus=$cpus;\n";
+	close (RUN);
+	close (PEND);
+	close (LIGHT);
+        close (CONF);
 	print "kiko> All set up!\n";
 }
 
 #start the deamon
-sub on{
-		
+sub on{	
 	#check that kiko's not running already
 	checksemaphore();
 	if($goon){die "kiko> It appears I'm already running\n"};
