@@ -194,7 +194,7 @@ sub setup{
 	print RUN $running_header;
 	print PEND $pending_header;
 	print LIGHT "0\n";
-        print CONF "\$period=1;\n\$cpus=$cpus;\n";
+        print CONF "\$period=1;\n\$ncpu=$cpus;\n";
 	close (RUN);
 	close (PEND);
 	close (LIGHT);
